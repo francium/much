@@ -65,6 +65,7 @@ class Blesses:
     reset = _csi + "0m"
 
     bold = _csi + "1m"
+    dim = _csi + "2m"
 
     fg_white = _csi + "97m"
     bg_white = _csi + "107m"
@@ -222,7 +223,7 @@ def main(filein: TextIO):
             elif isinstance(ev, FileinEvent):
                 if ev.end:
                     buffer.append((
-                        "~  ",
+                        "~",
                         (
                             Blesses.bg_white +
                             Blesses.fg_black +
@@ -231,7 +232,7 @@ def main(filein: TextIO):
                         )
                     ))
                 else:
-                    buffer.append((str(len(buffer)), ev.line))
+                    buffer.append((str(len(buffer) + 1), ev.line))
             elif isinstance(ev, WinchEvent):
                 terminal_size = Blesses.terminal_size()
                 h = terminal_size.lines
@@ -249,7 +250,9 @@ def main(filein: TextIO):
             m = min(len(filtered_buffer), log_height)
             for i in range(0, m):
                 j = i + l - m
-                Blesses.write(filtered_buffer[j][0] + " " + filtered_buffer[j][1], line=i)
+                line_num = "0:>{}".format(math.floor(math.log10(len(buffer))) + 1)
+                line_num = ("{" + line_num + "}").format(filtered_buffer[j][0])
+                Blesses.write(Blesses.dim + line_num + Blesses.reset + " " + filtered_buffer[j][1], line=i)
 
             Blesses.write("─" * w, line=h-2)
             prompt_line = "filter> " + user_input + "|"
