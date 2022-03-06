@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from queue import Queue
 from threading import Thread, Event as Flag
 from typing import TextIO, Tuple
+import argparse
 import logging
 import math
 import os
@@ -289,14 +290,17 @@ def get_logfile_name() -> str:
             return filename
 
 
-def init_logger():
-    logging.basicConfig(
-        filename=get_logfile_name(),
-        filemode='a',
-        format='%(levelname)-5s [%(asctime)s.%(msecs)-3d] %(threadName)s fn:%(name)s> %(message)s',
-        datefmt='%H:%M:%S',
-        level=logging.DEBUG
-    )
+def init_logger(enabled: bool):
+    if enabled:
+        logging.basicConfig(
+            filename=get_logfile_name(),
+            filemode='a',
+            format='%(levelname)-5s [%(asctime)s.%(msecs)-3d] %(threadName)s fn:%(name)s> %(message)s',
+            datefmt='%H:%M:%S',
+            level=logging.DEBUG
+        )
+    else:
+        logging.getLogger().disabled = True
 
 
 def setup_stdin() -> TextIO:
@@ -305,12 +309,24 @@ def setup_stdin() -> TextIO:
         sys.stdin = open('/dev/tty', 'r')
         return filein
     else:
-        print("invalid usage")
+        print("invalid usage: pipe or file redirect required as input")
         exit(1)
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="A pager with interactive filtering capabilities.")
+    parser.add_argument(
+        "-l",
+        "--log",
+        action="store_true", help="Enable logging (create a new files in /tmp/much.*.log)",
+    )
+    args = parser.parse_args()
+    return args
+
+
 if __name__ == '__main__':
-    init_logger()
+    args = parse_args()
+    init_logger(args.log)
     filein = setup_stdin()
     main(filein)
     logging.debug("Shutting down")
