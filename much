@@ -14,6 +14,31 @@ import termios
 import time
 import tty
 import math
+import signal
+
+
+WinchEventType = "winch_event"
+@dataclass
+class WinchEvent:
+    type = WinchEventType
+
+
+KeyEventType = "key_event"
+@dataclass
+class KeyEvent:
+    type = KeyEventType
+    key: str
+
+
+StdinEventType = "stdin_event"
+@dataclass
+class FileinEvent:
+    type = StdinEventType
+    line: str
+    end: bool = False
+
+
+EventQueue = Queue[FileinEvent | KeyEvent | WinchEvent]
 
 
 class Blesses:
@@ -91,21 +116,6 @@ class Blesses:
         return ch
 
 
-KeyEventType = "key_event"
-@dataclass
-class KeyEvent:
-    type = KeyEventType
-    key: str
-
-
-StdinEventType = "stdin_event"
-@dataclass
-class FileinEvent:
-    type = StdinEventType
-    line: str
-    end: bool = False
-
-
 def file_ready_to_read(fileno: int, timeout=0):
     r, _, _ = select.select([fileno], [], [], timeout)
     return fileno in r
@@ -113,7 +123,7 @@ def file_ready_to_read(fileno: int, timeout=0):
 
 def filein_thread(
     *,
-    q: Queue[FileinEvent],
+    q: EventQueue,
     kill_flag: Flag,
     filein: TextIO,
 ):
@@ -139,7 +149,7 @@ def filein_thread(
 
 def stdin_thread(
     *,
-    q: Queue[KeyEvent],
+    q: EventQueue,
     kill_flag: Flag,
 ):
     logging.debug("Thread start")
@@ -150,9 +160,17 @@ def stdin_thread(
     logging.debug("Thread stop")
 
 
+def mk_handle_sigwinch(q: EventQueue):
+    def handle_sigwinch(_, __):
+        q.put(WinchEvent())
+    return handle_sigwinch
+
+
 def main(stdin: TextIO, filein):
-    q = Queue[FileinEvent | KeyEvent]()
+    q = EventQueue()
     kill_flag = Flag()
+
+    signal.signal(signal.SIGWINCH, mk_handle_sigwinch(q))
 
     threads = [
         Thread(
@@ -185,11 +203,12 @@ def main(stdin: TextIO, filein):
 
     user_input: str = ""
 
+    terminal_size = Blesses.terminal_size()
+    h = terminal_size.lines
+    w = terminal_size.columns
+
     try:
         while True:
-            terminal_size = Blesses.terminal_size()
-            h = terminal_size.lines
-            w = terminal_size.columns
 
             ev = q.get()
             if isinstance(ev, KeyEvent):
@@ -213,6 +232,10 @@ def main(stdin: TextIO, filein):
                     ))
                 else:
                     buffer.append((str(len(buffer)), ev.line))
+            elif isinstance(ev, WinchEvent):
+                terminal_size = Blesses.terminal_size()
+                h = terminal_size.lines
+                w = terminal_size.columns
 
             Blesses.write(Blesses.clear_screen)
 
