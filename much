@@ -1,0 +1,294 @@
+#!/bin/env python3
+
+from dataclasses import dataclass
+from queue import Queue
+from threading import Thread, Event as Flag
+from typing import TextIO, Tuple
+import logging
+import os
+import select
+import shutil
+import sys
+import termios
+import termios
+import time
+import tty
+import math
+
+
+class Blesses:
+    _esc = "\x1b"
+    _csi = _esc + "["
+
+    alt_screen = _csi + "?47h"
+    normal_screen = _csi + "?47l"
+
+    save_cursor = _esc + "7"
+    restore_cursor = _esc + "8"
+
+    hide_cursor = _csi + "?25l"
+    show_cursor = _csi + "?25h"
+
+    move_cursor_origin = _csi + "H"
+    @classmethod
+    def move_cursor(cls, *, line: int, col: int):
+        return cls._csi + str(line) + ";" + str(col) + "H"
+
+    clear_screen = _csi + "2J"
+
+    reset = _csi + "0m"
+
+    bold = _csi + "1m"
+
+    fg_white = _csi + "97m"
+    bg_white = _csi + "107m"
+
+    fg_black = _csi + "30m"
+    bg_black = _csi + "40m"
+
+    @classmethod
+    def terminal_size(cls) -> os.terminal_size:
+        return shutil.get_terminal_size((80, 20))
+
+    @classmethod
+    def write(cls, *msg: str, col: int = None, line: int = None) -> None:
+        """
+        line and col use 0-based indexing
+        """
+        if col is not None or line is not None:
+            cls._write(
+                cls.move_cursor(
+                    line=line+1 if line else 1,
+                    col=col+1 if col else 1,
+                ),
+            )
+
+        cls._write(*msg)
+
+    @classmethod
+    def refresh(cls) -> None:
+        print("", end="", flush=True)
+
+    @classmethod
+    def _write(cls, *text: str) -> None:
+        print(*text, end="")
+
+    @classmethod
+    def getch(cls, timeout: float = None) -> None | str:
+        fd = sys.stdin.fileno()
+        old_settings = termios.tcgetattr(fd)
+        try:
+            tty.setraw(fd)
+            if timeout:
+                if file_ready_to_read(fd, timeout=timeout):
+                    ch = sys.stdin.read(1)
+                else:
+                    return None
+            else:
+                ch = sys.stdin.read(1)
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+        return ch
+
+
+KeyEventType = "key_event"
+@dataclass
+class KeyEvent:
+    type = KeyEventType
+    key: str
+
+
+StdinEventType = "stdin_event"
+@dataclass
+class FileinEvent:
+    type = StdinEventType
+    line: str
+    end: bool = False
+
+
+def file_ready_to_read(fileno: int, timeout=0):
+    r, _, _ = select.select([fileno], [], [], timeout)
+    return fileno in r
+
+
+def filein_thread(
+    *,
+    q: Queue[FileinEvent],
+    kill_flag: Flag,
+    filein: TextIO,
+):
+    logging.debug("Thread start")
+    fileno = filein.fileno()
+    while not kill_flag.is_set():
+        i = 0
+        while file_ready_to_read(fileno, timeout=1000 / 30 / 1000):
+            data = filein.readline()
+            if (data == ''):
+                q.put(FileinEvent('', end=True))
+                logging.debug("No more data to read, thread stop")
+                return
+            q.put(FileinEvent(data.rstrip()))
+            i += 1
+            if i == 10:
+                # Break occasionally to yield the GIL to other threads if we
+                # have a lot of data all at once
+                break
+        time.sleep(1000 / 30 / 1000)
+    logging.debug("Thread stop")
+
+
+def stdin_thread(
+    *,
+    q: Queue[KeyEvent],
+    kill_flag: Flag,
+):
+    logging.debug("Thread start")
+    while not kill_flag.is_set():
+        ch = Blesses.getch(timeout=1000 / 30 / 1000)
+        if ch and ord(ch) >= 32:
+            q.put(KeyEvent(ch))
+    logging.debug("Thread stop")
+
+
+def main(stdin: TextIO, filein):
+    q = Queue[FileinEvent | KeyEvent]()
+    kill_flag = Flag()
+
+    threads = [
+        Thread(
+            target=filein_thread,
+            kwargs=dict(
+                q=q,
+                filein=filein,
+                kill_flag=kill_flag,
+            )
+        ),
+        Thread(
+            target=stdin_thread,
+            kwargs=dict(
+                q=q,
+                kill_flag=kill_flag,
+            )
+        ),
+    ]
+    for thread in threads:
+        thread.start()
+
+    buffer = list[Tuple[str, str]]()
+    filtered_buffer = []
+
+    Blesses.write(Blesses.alt_screen)
+    Blesses.write(Blesses.hide_cursor)
+    Blesses.write(Blesses.save_cursor)
+    Blesses.write(Blesses.clear_screen)
+    Blesses.refresh()
+
+    user_input: str = ""
+
+    try:
+        while True:
+            terminal_size = Blesses.terminal_size()
+            h = terminal_size.lines
+            w = terminal_size.columns
+
+            ev = q.get()
+            if isinstance(ev, KeyEvent):
+                if ord(ev.key) == 127:
+                    user_input = user_input[:-1]
+                else:
+                    user_input += ev.key
+
+                if user_input == "jj":
+                    break
+            elif isinstance(ev, FileinEvent):
+                if ev.end:
+                    buffer.append((
+                        "~  ",
+                        (
+                            Blesses.bg_white +
+                            Blesses.fg_black +
+                            '(END)' +
+                            Blesses.reset
+                        )
+                    ))
+                else:
+                    buffer.append((str(len(buffer)), ev.line))
+
+            Blesses.write(Blesses.clear_screen)
+
+            if len(user_input) > 0:
+                filtered_buffer = [item for item in buffer if user_input in item[1]]
+            else:
+                filtered_buffer = buffer
+
+            log_height = h - 2
+            l = len(filtered_buffer)
+            m = min(len(filtered_buffer), log_height)
+            for i in range(0, m):
+                j = i + l - m
+                Blesses.write(filtered_buffer[j][0] + " " + filtered_buffer[j][1], line=i)
+
+            Blesses.write("─" * w, line=h-2)
+            prompt_line = "filter> " + user_input + "|"
+
+            if len(prompt_line) > w:
+                prompt_line = prompt_line[:w-1] + ">"
+            else:
+                prompt_line += " " * (w - len(prompt_line))
+            Blesses.write(prompt_line, line=h-1)
+
+            Blesses.refresh()
+    except KeyboardInterrupt as exc:
+        logging.exception(exc)
+    except Exception as exc:
+        logging.exception(exc)
+
+    Blesses.write(Blesses.restore_cursor)
+    Blesses.write(Blesses.show_cursor)
+    Blesses.write(Blesses.normal_screen)
+    Blesses.refresh()
+
+    logging.debug("Cleaning up threads")
+    kill_flag.set()
+    for thread in threads:
+        logging.debug("Joined thread " + thread.name)
+        thread.join()
+
+
+def get_logfile_name() -> str:
+    """Get an unused file for logging"""
+    i = 0
+    while True:
+        filename = f"/tmp/much.{math.floor(time.time())}{i}.log"
+        try:
+            os.stat(filename)
+            i += 1
+        except FileNotFoundError:
+            return filename
+
+
+def init_logger():
+    logging.basicConfig(
+        filename=get_logfile_name(),
+        filemode='a',
+        format='%(levelname)-5s [%(asctime)s.%(msecs)-3d] %(threadName)s fn:%(name)s> %(message)s',
+        datefmt='%H:%M:%S',
+        level=logging.DEBUG
+    )
+
+
+def setup_stdin() -> Tuple[TextIO, TextIO]:
+    if not sys.stdin.isatty():
+        filein = sys.stdin
+        sys.stdin = open('/dev/tty', 'r')
+        return sys.stdin, filein
+    else:
+        print("invalid usage")
+        exit(1)
+
+
+if __name__ == '__main__':
+    init_logger()
+    stdin, filein = setup_stdin()
+    main(sys.stdin, filein)
+    logging.debug("Shutting down")
