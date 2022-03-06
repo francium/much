@@ -5,16 +5,16 @@ from queue import Queue
 from threading import Thread, Event as Flag
 from typing import TextIO, Tuple
 import logging
+import math
 import os
 import select
 import shutil
+import signal
 import sys
 import termios
 import termios
 import time
 import tty
-import math
-import signal
 
 
 WinchEventType = "winch_event"
@@ -166,7 +166,7 @@ def mk_handle_sigwinch(q: EventQueue):
     return handle_sigwinch
 
 
-def main(stdin: TextIO, filein):
+def main(filein: TextIO):
     q = EventQueue()
     kill_flag = Flag()
 
@@ -209,7 +209,6 @@ def main(stdin: TextIO, filein):
 
     try:
         while True:
-
             ev = q.get()
             if isinstance(ev, KeyEvent):
                 if ord(ev.key) == 127:
@@ -300,11 +299,11 @@ def init_logger():
     )
 
 
-def setup_stdin() -> Tuple[TextIO, TextIO]:
+def setup_stdin() -> TextIO:
     if not sys.stdin.isatty():
         filein = sys.stdin
         sys.stdin = open('/dev/tty', 'r')
-        return sys.stdin, filein
+        return filein
     else:
         print("invalid usage")
         exit(1)
@@ -312,6 +311,6 @@ def setup_stdin() -> Tuple[TextIO, TextIO]:
 
 if __name__ == '__main__':
     init_logger()
-    stdin, filein = setup_stdin()
-    main(sys.stdin, filein)
+    filein = setup_stdin()
+    main(filein)
     logging.debug("Shutting down")
