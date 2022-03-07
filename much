@@ -1,6 +1,7 @@
 #!/bin/env python3
 
 from dataclasses import dataclass
+from enum import Enum
 from queue import Queue
 from threading import Thread, Event as Flag
 from typing import TextIO, Tuple
@@ -24,11 +25,30 @@ class WinchEvent:
     type = WinchEventType
 
 
+@dataclass
+class RegularKey:
+    char: str
+
+
+class SpecialKey(Enum):
+    CtrlC = '<ctrl>c'
+    CtrlZ = '<ctrl>z'
+    Home = '<home>'
+    End = '<end>'
+    PgUp = '<pgup>'
+    PgDn = '<pgdn>'
+    Left = '<left>'
+    Right = '<right>'
+    Up = '<up>'
+    Down = '<down>'
+    Esc = '<esc>'
+
+
 KeyEventType = "key_event"
 @dataclass
 class KeyEvent:
     type = KeyEventType
-    key: str
+    key: RegularKey | SpecialKey
 
 
 StdinEventType = "stdin_event"
@@ -157,8 +177,15 @@ def stdin_thread(
     logging.debug("Thread start")
     while not kill_flag.is_set():
         ch = Blesses.getch(timeout=1000 / 30 / 1000)
-        if ch and ord(ch) >= 32:
-            q.put(KeyEvent(ch))
+        if ch:
+            if ord(ch) == 27:
+                q.put(KeyEvent(SpecialKey.Esc))
+            if ord(ch) == 26:
+                q.put(KeyEvent(SpecialKey.CtrlZ))
+            if ord(ch) == 3:
+                q.put(KeyEvent(SpecialKey.CtrlC))
+            if ord(ch) >= 32:
+                q.put(KeyEvent(RegularKey(ch)))
     logging.debug("Thread stop")
 
 
